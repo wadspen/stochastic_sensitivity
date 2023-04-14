@@ -1,0 +1,217 @@
+---
+title: "SIR simulation"
+author: "Spencer Wadsworth"
+date: "2023-02-25"
+output: html_document
+---
+
+The book Stochastic Modeling for Systems Biology (SMSB) by Darren J. Wilkinson
+discusses the models of and how 
+to simulate from chemical and biological kinetic systems through the use of 
+stochastic 
+differential equation (SDE) modeling. Chapter 6 details how this is done using
+the Gillespie algorithm and chapter 7 provides a handful of relevant chemical 
+and biological examples. 
+
+Though not strictly a chemical kinetics problem, the 
+SIR problem is modeled very similary and the principles in SMSB may apply 
+directly to sampling from and/or modeling the SIR process, see also 
+\textit{The SIR dynamic model of infectious disease transmission and its 
+analogy with chemical kinetics}(Simon 2020).
+
+### Setting up the SIR compartment model
+
+In the SIR model, there are three compartments: S representing the proportion of
+a population susceptible to a disease, I the proportion currently infected, and
+R the proportion recovered from the disease. The reaction equations for an SIR
+system are as follows
+
+$$ S + I \longrightarrow 2I \\ $$
+
+$$I \longrightarrow R$$
+
+For continuity from SMSB and Simon, I will use square brackets $[\cdot]$ to 
+represent the concentration of a compartment. For the SIR model, we have the
+ordinary differential equations (ODE)s 
+
+$$\frac{d[S]}{dt} = -\beta[S][I] \\$$
+$$\frac{d[I]}{dt} = \beta[S][I] -\gamma[I] \\$$
+$$\frac{d[R]}{dt} = \gamma[I]$$
+where $\beta$ is essentially the rate of an infected person infecting a 
+susceptible person for a given time unit and $\gamma$ is the amount of time a 
+person is infected before recovery or death.
+
+
+$$
+\frac{d}{dt}
+\begin{pmatrix}
+[S] \\ [I] \\ [R]
+\end{pmatrix}
+=
+\begin{pmatrix}
+-1 \;\;0 \\ 1  -1 \\
+0 \;\; 1
+\end{pmatrix}
+\begin{pmatrix}
+\beta[S][I] \\ \gamma[I]
+\end{pmatrix}
+$$
+The matrix of $1s$ and $0s$ is the stoichiometry matrix as defined in SMBS and 
+which I will derive here by use of a Petri net (def 2.3 SMSB). For the Petri
+net $(P, T, Pre, Post, M)$
+
+$$P = 
+\begin{pmatrix}
+S \\ I \\ R
+\end{pmatrix}, \;\;\;\;
+T =
+\begin{pmatrix}
+\text{Infection} \\ \text{Recovery}
+\end{pmatrix},
+$$
+$$
+Pre = 
+\begin{pmatrix}
+1 \;\; 1 \;\; 0 \\ 0 \;\; 1 \;\;0
+\end{pmatrix}, \;\;
+Post = 
+\begin{pmatrix}
+0 \;\; 2 \;\; 0 \\ 0 \;\; 0 \;\;1
+\end{pmatrix}, \;\;
+M = 
+\begin{pmatrix}
+S0 \\ I0 \\ R0
+\end{pmatrix}
+$$
+
+so the stoichiometry matrix 
+
+$$
+(Post - Pre)' =
+\begin{pmatrix}
+-1 \;\;0 \\ 1  -1 \\
+0 \;\; 1
+\end{pmatrix}
+$$
+as seen above.
+
+```{r}
+Pre <- rbind(c(1,1,0),c(0,1,0))
+Post <- rbind(c(0,2,0),c(0,0,1))
+
+t(Post - Pre)
+```
+
+```{r}
+sir <- function(x, beta = 1/2, gamma = 1/4) {
+  c(-beta*x[1]*x[2],
+    beta*x[1]*x[2] - gamma*x[2],
+    gamma*x[2])
+}
+
+euler <- function(t=50,dt=0.001,fun=f,ic=c(1,1),...)
+{
+  p=length(ic)
+  n <- t/dt
+  xmat=matrix(0,ncol=p,nrow=n)
+  x=ic
+  xmat[1,]=x
+  for (i in 2:n) {
+    x = x + fun(x,...)*dt
+    xmat[i,]=x
+  }
+  ts(xmat,start=0,deltat=dt)
+}
+
+plot(euler(t=40,fun=sir,ic=c(.9,.1,0)))
+```
+
+### Mass-action stochastic kinetics of SIR model
+
+Here we have the three compartments $S, I, R$ and the two reactions we will call
+$R_1$ and $R_2$, these two sets representing $P$ and $T$ defined earlier. The
+two rate reactions will be 
+
+$$
+h_1(x,c_1) = c_1x_1x_2 \\
+h_2(x,c_2) = c_2x_2
+$$
+where $c_1$ is the hazard of an infection reaction happing and $c_2$ is the 
+hazard of a recovery/death. 
+
+```{r}
+gillespie <- function(N,n,...) {
+  tt=0
+  x=N$M
+  S=t(N$Post-N$Pre)
+  u=nrow(S)
+  v=ncol(S)
+  tvec=vector("numeric",n)
+  xmat=matrix(0,ncol=u,nrow=n+1)
+  xmat[1,]=x
+  for (i in 1:n) {
+    h=N$h(x,...)
+    tt=tt+rexp(1,sum(h))
+    j=sample(v,1,prob=h)
+    x=x+S[,j]
+    tvec[i]=tt
+    xmat[i+1,]=x
+  }
+  return(list(t=tvec,x=xmat))
+}
+```
+
+```{r}
+N = list()
+N$M = c(9000,10,1)
+N$Pre = Pre
+N$Post = Post
+N$h = function(y, th = c(.008,2)) 
+{return(c(th[1]*y[1]*y[2], th[2]*y[2]))}
+
+out=gillespie(N,20000)
+op=par(mfrow=c(2,2))
+plot(stepfun(out$t,out$x[,1]),pch="")
+plot(stepfun(out$t,out$x[,2]),pch="")
+plot(stepfun(out$t,out$x[,3]),pch="")
+# plot(out$x,type='l')
+# par(op)
+
+```
+
+```{r}
+discretise <- function(out, dt=1, start=0) {
+  events = length(out$t)
+  end = out$t[events]
+  len = (end - start)%/%dt+1
+  x = matrix(0,nrow=len,ncol=ncol(out$x))
+  target = 0
+  j = 1
+  for (i in 1:events) {
+    while (out$t[i] >= target) {
+      x[j,] = out$x[i,]
+      j = j + 1
+      target = target + dt
+    }
+  }
+  ts(x, start = 0, deltat = 0)
+}
+
+plot(discretise(out,dt=0.01))
+
+N = list()
+N$M = c(50,100)
+N$Pre = matrix(c(1,0,1,1,0,1),ncol=2,byrow=TRUE)
+N$Post = matrix(c(2,0,0,2,0,0),ncol=2,byrow=TRUE)
+N$h=function(y,th=c(1,.005,.6))
+{return(c(th[1]*y[1], th[2]*y[1]*y[2],th[3]*y[2]))}
+
+out=gillespie(N,10000)
+op=par(mfrow=c(2,2))
+plot(stepfun(out$t,out$x[,1]),pch="")
+plot(stepfun(out$t,out$x[,2]),pch="")
+plot(out$x,type='l')
+par(op)
+```
+
+
